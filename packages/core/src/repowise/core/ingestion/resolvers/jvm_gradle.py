@@ -32,9 +32,23 @@ log = structlog.get_logger(__name__)
 # Regex patterns
 # ---------------------------------------------------------------------------
 
-_INCLUDE_RE = re.compile(r'include\s*\(\s*((?:"[^"]+"\s*,?\s*)+)\)')
+# One quoted module name, in either quote style: 'core' or "core".
+_QUOTED = r"""(?:'[^'\n]+'|"[^"\n]+")"""
+# A whole ``include`` statement, in any of the forms Gradle accepts:
+#   include("core", "api")          (Kotlin DSL / Groovy, parenthesised)
+#   include('core', 'api')          (Groovy, parenthesised, single quotes)
+#   include 'core', 'api', 'web'    (Groovy, space form)
+#   include 'core',
+#           'api'                   (Groovy, list continued over lines)
+# ``\b`` after ``include`` keeps ``includeBuild`` out. Comments are stripped
+# before matching, so one between two items does not end the list.
+_INCLUDE_RE = re.compile(
+    rf"\binclude\b\s*(?:\(\s*(?P<paren>[^)]*)\)|(?P<bare>{_QUOTED}(?:\s*,\s*{_QUOTED})*))"
+)
+# Each quoted name inside a matched ``include`` statement (group 1 or 2).
+_INCLUDE_MODULE_RE = re.compile(r"""'([^'\n]+)'|"([^"\n]+)\"""")
+# Double-quoted items of a ``srcDirs(...)`` list.
 _INCLUDE_ITEM_RE = re.compile(r'"([^"]+)"')
-_INCLUDE_LINE_RE = re.compile(r'include\s+([\'"])([^\'"]+)\1')
 _INCLUDE_BUILD_RE = re.compile(r"""includeBuild\s*\(?\s*(["'])([^"']+)\1""")
 _PROJECT_DIR_RE = re.compile(
     r'project\s*\(\s*"([^"]+)"\s*\)\s*\.\s*projectDir\s*=\s*file\s*\(\s*"([^"]+)"\s*\)'
@@ -146,12 +160,18 @@ def parse_settings(settings_file: Path) -> tuple[list[str], dict[str, str]]:
     except Exception:
         return [], {}
 
+    # Drop comments first: a comment between two items would otherwise end
+    # the list, and a commented-out include would still register.
+    include_text = _GRADLE_BLOCK_COMMENT_RE.sub(
+        lambda m: "\n" * m.group(0).count("\n"), text
+    )
+    include_text = _GRADLE_LINE_COMMENT_RE.sub("", include_text)
+
     modules: list[str] = []
-    for match in _INCLUDE_RE.finditer(text):
-        for item in _INCLUDE_ITEM_RE.findall(match.group(1)):
-            modules.append(item.lstrip(":"))
-    for match in _INCLUDE_LINE_RE.finditer(text):
-        modules.append(match.group(2).lstrip(":"))
+    for match in _INCLUDE_RE.finditer(include_text):
+        items = match.group("paren") if match.group("paren") is not None else match.group("bare")
+        for single, double in _INCLUDE_MODULE_RE.findall(items):
+            modules.append((single or double).lstrip(":"))
 
     # Dedupe preserving order
     seen: set[str] = set()
