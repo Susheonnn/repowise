@@ -323,6 +323,18 @@ def _plausible_source_set(name: str, known: set[str]) -> bool:
     return name in known or _split_source_set_name(name) is not None
 
 
+def _is_plausible_edge(source: str, target: str, known: set[str]) -> bool:
+    """Whether ``source -> target`` can be a source-set dependency edge.
+
+    A source set never depends on itself, and both ends must look like source sets.
+    """
+    return (
+        source != target
+        and _plausible_source_set(source, known)
+        and _plausible_source_set(target, known)
+    )
+
+
 def _block_header(text: str, pos: int) -> str | None:
     """The statement before the ``{`` that encloses *pos*, or None at top level."""
     depth = 0
@@ -348,13 +360,11 @@ def _parse_source_set_edges(script: str, known: set[str]) -> dict[str, list[str]
     edges: dict[str, list[str]] = {}
 
     def add(source: str, target: str) -> None:
-        if (
-            source != target
-            and _plausible_source_set(source, known)
-            and _plausible_source_set(target, known)
-            and target not in edges.setdefault(source, [])
-        ):
-            edges[source].append(target)
+        if not _is_plausible_edge(source, target, known):
+            return
+        targets = edges.setdefault(source, [])
+        if target not in targets:
+            targets.append(target)
 
     for match in _DEPENDS_ON_RE.finditer(script):
         arg = _DEPENDS_ON_ARG_RE.match(script, match.end())
